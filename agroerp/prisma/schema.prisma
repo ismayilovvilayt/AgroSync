@@ -1,0 +1,596 @@
+// AgroSync - Aqrotexniki İdarəetmə Sistemi
+// Prisma Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ==========================================
+// İstifadəçi rolları
+// ==========================================
+enum Role {
+  ADMIN
+  OFFICE_MANAGER    // Baş ofis — bütün təsərrüfatları izləyir (Read-only)
+  FARM_MANAGER      // Farm Menecer — öz təsərrüfatını izləyir (Read-only)
+  HEAD_AGRONOMIST   // Baş Aqronom — öz təsərrüfatı, Create & Update
+  AGRONOMIST        // Aqronom — öz təsərrüfatı, yalnız Create
+}
+
+// ==========================================
+// Şirkət
+// ==========================================
+model Company {
+  id         String   @id @default(cuid())
+  name       String
+  address    String?
+  phone      String?
+  logo       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  farms               Farm[]
+  users               User[]
+  warehouses          Warehouse[]
+  seasons             Season[]
+  rainfalls           Rainfall[]
+  operationCategories OperationCategory[]
+  aggregates          Aggregate[]
+}
+
+// ==========================================
+// Təsərrüfat
+// ==========================================
+model Farm {
+  id            String   @id @default(cuid())
+  companyId     String
+  name          String
+  location      String?
+  latitude      Float?   // Hava proqnozu üçün GPS koordinat
+  longitude     Float?   // Hava proqnozu üçün GPS koordinat
+  totalHectares Float    @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fields     Field[]
+  users      User[]
+  warehouses Warehouse[]
+  fieldTasks FieldTask[]
+}
+
+// ==========================================
+// Sahə (Pivot)
+// ==========================================
+model Field {
+  id                  String   @id @default(cuid())
+  farmId              String
+  parentId            String?  // Alt-sahə üçün (Pivot 2 → 2.1, 2.2)
+  fieldNumber         String
+  hectares            Float
+  soilType            String?
+  status              String   @default("ACTIVE") // ACTIVE, FALLOW
+  irrigationIntervalDays Int?  // Maksimum suvarma aralığı (gün) — deadline
+  latitude            Float?   // Xəritə mərkəzi (enlik)
+  longitude           Float?   // Xəritə mərkəzi (uzunluq)
+  polygon             String?  // GeoJSON polygon koordinatları [[lng,lat],[lng,lat],...]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  farm         Farm              @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  parent       Field?            @relation("FieldChildren", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Field[]           @relation("FieldChildren")
+  seasonFields SeasonField[]
+  processes    AgroProcess[]
+  irrigations  Irrigation[]
+  notes        FieldNote[]
+  movements    WarehouseMovement[]
+  rainfallFields RainfallField[]
+  pivotChart   PivotSpeedChart?
+  stoppages    PivotStoppage[]
+  writeOffs    WriteOff[]
+  fieldMonitorings    FieldMonitoring[]
+  emergenceMonitorings EmergenceMonitoring[]
+  fieldTaskItems       FieldTaskItem[]
+  harvestRecords       HarvestRecord[]
+}
+
+// ==========================================
+// Mövsüm (Sezon)
+// ==========================================
+model Season {
+  id          String    @id @default(cuid())
+  companyId   String
+  name        String    // "2024-2025 Payız", "2025 Yaz"
+  startDate   DateTime? // Mövsüm başlanğıcı (ilk sahə əkiləndə)
+  endDate     DateTime? // Mövsüm sonu (biçin tamamlananda)
+  status      String    @default("PLANNED") // PLANNED, ACTIVE, COMPLETED
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  seasonFields SeasonField[]
+}
+
+// ==========================================
+// Mövsüm-Sahə Əlaqəsi (Bu mövsümdə bu sahədə nə əkilib)
+// ==========================================
+model SeasonField {
+  id          String    @id @default(cuid())
+  seasonId    String
+  fieldId     String
+  cropType    String    // Buğda, Qarğıdalı, Çuğundur, Pambıq, Günəbaxan ...
+  plantedArea Float?    // Əkilən sahə (ha) — tam və ya yarım
+  status      String    @default("PLANNED") // PLANNED, SOWN, GROWING, HARVESTED
+  sowingDate  DateTime? // Əkin tarixi
+  harvestDate DateTime? // Biçin tarixi
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  season    Season        @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  field     Field         @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  processes AgroProcess[]
+  fieldTaskItems FieldTaskItem[]
+  harvestRecords HarvestRecord[]
+}
+
+// ==========================================
+// İstifadəçi
+// ==========================================
+model User {
+  id        String   @id @default(cuid())
+  companyId String
+  farmId    String?
+  email     String   @unique
+  password  String
+  fullName  String
+  phone     String?
+  role      Role     @default(AGRONOMIST)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company    Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  farm       Farm?               @relation(fields: [farmId], references: [id], onDelete: SetNull)
+  processes  AgroProcess[]
+  irrigations Irrigation[]
+  notes      FieldNote[]
+  movements  WarehouseMovement[]
+  rainfalls  Rainfall[]
+  stoppages  PivotStoppage[]
+  writeOffs  WriteOff[]
+  fieldMonitorings    FieldMonitoring[]
+  emergenceMonitorings EmergenceMonitoring[]
+  fieldTasks FieldTask[]
+  harvestRecords HarvestRecord[]
+}
+
+// ==========================================
+// Əməliyyat Kateqoriyası (istifadəçi tərəfindən yaradılır)
+// ==========================================
+model OperationCategory {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String   // "Torpaq hazırlığı", "Toxum səpini", "Kimyəvi mübarizə", "Gübrələmə", "Biçin"
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company   Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  processes OperationProcess[]
+  agroProcesses AgroProcess[]
+}
+
+// ==========================================
+// Əməliyyat Prosesi (kateqoriyaya bağlı alt-proses)
+// ==========================================
+model OperationProcess {
+  id         String   @id @default(cuid())
+  categoryId String
+  name       String   // "Şumlama", "Diskləmə", "Herbisid" ...
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category      OperationCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  agroProcesses AgroProcess[]
+}
+
+// ==========================================
+// Aqreqat (Texnika / Avadanlıq)
+// ==========================================
+model Aggregate {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String   // "John Deere 8320R", "MTZ-1221", "Diskli mala"
+  type      String?  // "Traktor", "Kombayn", "Aqreqat", "Digər"
+  plateNumber String? // Dövlət nömrəsi (traktorlar üçün)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company              Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  agroProcessAggregates AgroProcess[] @relation("AgroProcessAggregate")
+  agroProcessTractors   AgroProcess[] @relation("AgroProcessTractor")
+}
+
+// ==========================================
+// Aqrotexniki Proses (Yenilənmiş)
+// ==========================================
+model AgroProcess {
+  id             String   @id @default(cuid())
+  fieldId        String
+  userId         String
+  seasonFieldId  String?  // Aktiv sezon+bitki
+  categoryId     String?  // Əməliyyat kateqoriyası
+  processId      String?  // Alt-proses
+  aggregateId    String?  // Aqreqat/avadanlıq
+  tractorId      String?  // Traktor (ayrıca)
+
+  // Köhnə sahə — geriyə uyğunluq
+  processType    String   @default("OTHER")
+  description    String?
+  operationSeqNumber Int?  // Avtomatik sıra nömrəsi (eyni sahə+kateqoriya üzrə)
+
+  processDate    DateTime
+  areaProcessed  Float?   // ha — default = sahə.hectares
+  notes          String?
+  photos         String?  // JSON array
+  status         String   @default("COMPLETED")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  field       Field              @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seasonField SeasonField?       @relation(fields: [seasonFieldId], references: [id], onDelete: SetNull)
+  category    OperationCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  process     OperationProcess?  @relation(fields: [processId], references: [id], onDelete: SetNull)
+  aggregate   Aggregate?         @relation("AgroProcessAggregate", fields: [aggregateId], references: [id], onDelete: SetNull)
+  tractor     Aggregate?         @relation("AgroProcessTractor", fields: [tractorId], references: [id], onDelete: SetNull)
+  materials   AgroProcessMaterial[]
+}
+
+// ==========================================
+// Proses Materialı (çox-material, anbar əlaqəli)
+// ==========================================
+model AgroProcessMaterial {
+  id                  String  @id @default(cuid())
+  agroProcessId       String
+  warehouseItemId     String
+  quantity            Float   // istifadə olunan miqdar
+  ratePerHa           Float?  // norma (ha-ya görə)
+  warehouseMovementId String? // anbar çıxış qeydi
+
+  agroProcess       AgroProcess        @relation(fields: [agroProcessId], references: [id], onDelete: Cascade)
+  warehouseItem     WarehouseItem      @relation(fields: [warehouseItemId], references: [id], onDelete: Cascade)
+  warehouseMovement WarehouseMovement? @relation(fields: [warehouseMovementId], references: [id], onDelete: SetNull)
+  writeOff          WriteOff?
+}
+
+// ==========================================
+// Pivot Sürət Cədvəli
+// ==========================================
+model PivotSpeedChart {
+  id       String @id @default(cuid())
+  fieldId  String @unique  // hər pivot sahə üçün bir cədvəl
+  entries  String          // JSON: [{speed: 10, mm: 45}, {speed: 20, mm: 28}, ...]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  field Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// Suvarma (Pivot / Sprinkler / Damlama)
+// ==========================================
+model Irrigation {
+  id              String   @id @default(cuid())
+  fieldId         String
+  userId          String
+  irrigationType  String   // PIVOT, SPRINKLER, DRIP
+  irrigationDate  DateTime
+
+  // Pivot üçün
+  pivotSpeed      Float?   // % sürət (10, 20, 30...)
+  waterMm         Float?   // düşən mm
+
+  // Sprinkler / Damlama
+  duration        Float?   // saat
+  waterVolume     Float?   // m³
+
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  field Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// Yağıntı Qeydiyyatı
+// ==========================================
+model Rainfall {
+  id           String   @id @default(cuid())
+  companyId    String
+  userId       String
+  rainfallDate DateTime
+  amountMm     Float
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fields  RainfallField[]
+}
+
+model RainfallField {
+  id         String @id @default(cuid())
+  rainfallId String
+  fieldId    String
+
+  rainfall Rainfall @relation(fields: [rainfallId], references: [id], onDelete: Cascade)
+  field    Field    @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@unique([rainfallId, fieldId])
+}
+
+// ==========================================
+// Anbar
+// ==========================================
+model Warehouse {
+  id        String   @id @default(cuid())
+  companyId String
+  farmId    String?  // Təsərrüfata bağlı anbar
+  name      String
+  location  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  farm    Farm?           @relation(fields: [farmId], references: [id], onDelete: SetNull)
+  items   WarehouseItem[]
+}
+
+// ==========================================
+// Anbar Məhsulu
+// ==========================================
+model WarehouseItem {
+  id           String   @id @default(cuid())
+  warehouseId  String
+  name         String
+  code1C       String?  // 1C məhsul kodu (sabit)
+  orderNumber  String?  // Son sifariş nömrəsi
+  category     String   // SEED, FERTILIZER, PESTICIDE, HERBICIDE, FUEL, EQUIPMENT, OTHER
+  currentStock Float    @default(0)
+  unit         String   // kq, litr, ədəd, ton
+  minStock     Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  warehouse        Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  movements        WarehouseMovement[]
+  processMaterials AgroProcessMaterial[]
+  writeOffs        WriteOff[]
+}
+
+// ==========================================
+// Anbar Hərəkəti
+// ==========================================
+model WarehouseMovement {
+  id              String   @id @default(cuid())
+  warehouseItemId String
+  userId          String
+  fieldId         String?
+  movementType    String   // IN, OUT
+  quantity        Float
+  reason          String?
+  supplier        String?
+  unitPrice       Float?
+  movementDate    DateTime
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  warehouseItem    WarehouseItem         @relation(fields: [warehouseItemId], references: [id], onDelete: Cascade)
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  field            Field?                @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+  processMaterials AgroProcessMaterial[]
+}
+
+// ==========================================
+// Sahə Qeydi (Aqronom Gündəliyi)
+// ==========================================
+model FieldNote {
+  id               String   @id @default(cuid())
+  fieldId          String
+  userId           String
+  title            String
+  content          String
+  photos           String?  // JSON array of photo URLs
+  weatherCondition String?
+  temperature      Float?
+  noteDate         DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  field Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// Pivot Dayanma Qeydi (Nasazlıq / Texniki)
+// ==========================================
+model PivotStoppage {
+  id          String    @id @default(cuid())
+  fieldId     String
+  userId      String
+  startDate   DateTime
+  endDate     DateTime? // null = hələ davam edir
+  reason      String    // BREAKDOWN, MAINTENANCE, POWER_OUTAGE, WATER_SHORTAGE, OTHER
+  title       String    // Qısa başlıq
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  field Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// Silinmə Qeydi (Aqrotexniki işdən → anbar silinməsi)
+// ==========================================
+model WriteOff {
+  id                    String    @id @default(cuid())
+  agroProcessMaterialId String    @unique // hər material → bir silinmə
+  warehouseItemId       String
+  fieldId               String
+  userId                String?           // kim sildi
+  quantity              Float
+  status                String    @default("PENDING") // PENDING, COMPLETED
+  processDate           DateTime          // aqrotexniki işin tarixi
+  completedAt           DateTime?         // silinmə təsdiqlənmə tarixi
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  agroProcessMaterial AgroProcessMaterial @relation(fields: [agroProcessMaterialId], references: [id], onDelete: Cascade)
+  warehouseItem       WarehouseItem      @relation(fields: [warehouseItemId], references: [id], onDelete: Cascade)
+  field               Field              @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user                User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+// ==========================================
+// Sahə Monitorinqi
+// ==========================================
+model FieldMonitoring {
+  id                 String   @id @default(cuid())
+  fieldId            String
+  userId             String
+  monitoringDate     DateTime
+
+  // Avtomatik doldurulan
+  cropType           String?  // SeasonField-dən
+  lastIrrigationDate DateTime? // Son suvarma tarixi
+  lastIrrigationMm   Float?   // Son suvarma mm
+
+  // Monitorinq sahələri
+  plantPhase         String?  // Bitkinin fazası
+  pest               String?  // Zərərverici
+  pestPhotos         String?  // JSON array
+  disease            String?  // Xəstəlik
+  diseasePhotos      String?  // JSON array
+  weedStatus         String?  // Alaq otlarının vəziyyəti
+  weedPhotos         String?  // JSON array
+  nutrientDeficiency String?  // Qida çatışmazlığı / stres
+  nutrientPhotos     String?  // JSON array
+  rodentActivity     String?  // Gəmirici aktivliyi
+  rodentLocation     String?  // Gəmirici konumu
+  irrigationDepthCm  Float?   // Suvarma dərinliyi (sm)
+  fieldPhoto         String?  // Sahənin vizual şəkli
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  field Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// Çıxış Monitorinqi
+// ==========================================
+model EmergenceMonitoring {
+  id                String   @id @default(cuid())
+  fieldId           String
+  userId            String
+  monitoringDate    DateTime
+
+  // Avtomatik
+  sowingDate        DateTime? // Toxum səpini prosesindən
+  cropType          String?   // SeasonField-dən
+  variety           String?   // Toxum növü
+
+  // Manual
+  plantedCount      Float?    // Əkilən bitki sayı
+  countUnit         String    @default("thousand") // "million" | "thousand"
+  emergedCount      Float?    // Çıxan bitki sayı
+  emergencePercent  Float?    // Çıxış faizi (avtomatik)
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  field Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+
+
+// ==========================================
+// Aqrotexniki Tapşırıqlar (Task İzləmə)
+// ==========================================
+model FieldTask {
+  id          String    @id @default(cuid())
+  companyId   String
+  createdById String
+  farmId      String?   // null = bütün təsərrüfatlar, dolu = yalnız o farm
+
+  cropType    String    // "Şəkər çuğunduru" — o bitkisi olan bütün pivotlara tətbiq olunur
+  title       String    // "2-ci Fungisid tətbiqi"
+  category    String?   // "fungisid" | "insektisid" | "herbisid" | "suvarma" | "gubre" | "diger"
+  description String?
+  dueDate     DateTime
+  status      String    @default("ACTIVE") // ACTIVE | ARCHIVED
+
+  // Dinamik deadline
+  firstApplicationDate DateTime?  // 1-ci tətbiq tarixi
+  waitDays             Int?       // Gözləmə günləri
+  secondDueDate        DateTime?  // Avtomatik: firstApplicationDate + waitDays
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items       FieldTaskItem[]
+  createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  farm        Farm?  @relation(fields: [farmId], references: [id], onDelete: SetNull)
+}
+
+// Hər pivot üçün tamamlanma vəziyyəti
+model FieldTaskItem {
+  id            String    @id @default(cuid())
+  taskId        String
+  fieldId       String
+  seasonFieldId String?   // Hansı məhsul üçün (bir sahədə birdən çox bitki ola bilər)
+
+  completed     Boolean   @default(false)
+  completedAt   DateTime?
+
+  task        FieldTask    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  field       Field        @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  seasonField SeasonField? @relation(fields: [seasonFieldId], references: [id], onDelete: SetNull)
+}
+
+// ==========================================
+// Yığım Uçotu (Harvest Tracking)
+// ==========================================
+model HarvestRecord {
+  id             String   @id @default(cuid())
+  fieldId        String
+  seasonFieldId  String?
+  userId         String
+  harvestDate    DateTime
+  cropType       String
+  yieldTons      Float    // Yığılan məhsul (ton)
+  moisturePercent Float?  // Rütubət (%)
+  qualityGrade   String?  // A, B, C
+  truckCount     Int?     // Maşın sayı
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  field       Field        @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  seasonField SeasonField? @relation(fields: [seasonFieldId], references: [id], onDelete: SetNull)
+  user        User         @relation(fields: [userId], references: [id])
+}
